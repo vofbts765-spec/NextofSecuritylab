@@ -29,8 +29,11 @@ import {
   HelpCircle,
   Clock,
   Send,
-  X
+  X,
+  Volume2,
+  VolumeX
 } from 'lucide-react';
+import { soundEngine } from './utils/audio';
 
 // Type definitions
 export type Category = 'All Labs' | 'Enumeration' | 'Web Exploitation' | 'Linux Fundamentals';
@@ -453,8 +456,53 @@ export default function App() {
   const [pastCommands, setPastCommands] = useState<string[]>(['help']);
   const [terminalTheme, setTerminalTheme] = useState<'green' | 'red' | 'cyan'>('green');
   const [isTerminalMaximized, setIsTerminalMaximized] = useState<boolean>(false);
+  const [sfxEnabled, setSfxEnabled] = useState<boolean>(() => soundEngine.enabled);
+  const terminalBodyRef = useRef<HTMLDivElement>(null);
   const terminalBottomRef = useRef<HTMLDivElement>(null);
   const terminalInputRef = useRef<HTMLInputElement>(null);
+  const isFirstMount = useRef<boolean>(true);
+
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const triggerToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 4000);
+  };
+
+  // Direct 1-click flag claim & lab solve
+  const handleClaimFlagDirectly = (labId: string, flagHash: string, title?: string) => {
+    soundEngine.playVictory();
+    if (!solvedLabs.includes(labId)) {
+      setSolvedLabs(prev => [...prev, labId]);
+      triggerToast(`🎉 TARGET COMPROMISED: ${title || labId} marked as SOLVED!`);
+    } else {
+      triggerToast(`✓ Status: ${title || labId} is already verified as solved!`);
+    }
+  };
+
+  // Run any suggested command or attack inside the terminal simulator
+  const runCommandInTerminal = (cmdToRun: string) => {
+    soundEngine.playLaunch();
+    setActiveLabModal(null);
+    const terminalEl = document.getElementById('terminal-section');
+    if (terminalEl) {
+      terminalEl.scrollIntoView({ behavior: 'smooth' });
+    }
+    setTimeout(() => {
+      executeTerminalCommand(cmdToRun);
+    }, 350);
+  };
+
+  // Toggle Sound Effects
+  const handleToggleSfx = () => {
+    const nextState = soundEngine.toggle();
+    setSfxEnabled(nextState);
+  };
+
+  // Ensure window always starts at the top on initial load
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0, behavior: 'instant' as ScrollBehavior });
+  }, []);
 
   // Persist solved labs
   useEffect(() => {
@@ -465,13 +513,20 @@ export default function App() {
     }
   }, [solvedLabs]);
 
-  // Scroll terminal to bottom when new history is added
+  // Scroll ONLY the terminal inner container (not the window) when new commands are executed
   useEffect(() => {
-    terminalBottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (isFirstMount.current) {
+      isFirstMount.current = false;
+      return;
+    }
+    if (terminalBodyRef.current) {
+      terminalBodyRef.current.scrollTop = terminalBodyRef.current.scrollHeight;
+    }
   }, [terminalHistory]);
 
   // Copy helper
   const handleCopy = (text: string) => {
+    soundEngine.playCopy();
     navigator.clipboard.writeText(text);
     setCopiedText(text);
     setTimeout(() => setCopiedText(null), 2000);
@@ -484,6 +539,7 @@ export default function App() {
 
     const trimmed = flagInput.trim();
     if (trimmed === activeLabModal.flag) {
+      soundEngine.playVictory();
       if (!solvedLabs.includes(activeLabModal.id)) {
         setSolvedLabs(prev => [...prev, activeLabModal.id]);
       }
@@ -492,6 +548,7 @@ export default function App() {
         message: 'AUTHENTICATION VERIFIED! Flag accepted. Target compromised.'
       });
     } else {
+      soundEngine.playError();
       setFlagFeedback({
         status: 'error',
         message: 'ACCESS DENIED: Incorrect flag hash. Review lab telemetry and retry.'
@@ -514,10 +571,9 @@ export default function App() {
     return matchesCategory && matchesDifficulty && matchesQuery;
   });
 
-  // Terminal command executor
-  const handleTerminalSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    const rawCmd = commandInput.trim();
+  // Core Interactive Terminal Command Executor
+  const executeTerminalCommand = (rawInputText: string) => {
+    const rawCmd = rawInputText.trim();
     if (!rawCmd) return;
 
     // Add to command history
@@ -525,119 +581,573 @@ export default function App() {
     setHistoryIndex(-1);
     setCommandInput('');
 
+    const newId = `cmd-${Date.now()}`;
+    const lower = rawCmd.toLowerCase();
     const args = rawCmd.split(' ').filter(Boolean);
-    const cmd = args[0].toLowerCase();
+    const cmd = args[0]?.toLowerCase() || '';
     const subArg = args.slice(1).join(' ');
 
-    const newId = `cmd-${Date.now()}`;
-
     if (cmd === 'clear') {
+      soundEngine.playClear();
       setTerminalHistory([]);
       return;
     }
 
     let outputNode: React.ReactNode = null;
     let isError = false;
+    let capturedFlag: { labId: string; labTitle: string; flag: string } | null = null;
 
-    switch (cmd) {
-      case 'help':
+    // 1. HELP
+    if (cmd === 'help') {
+      outputNode = (
+        <div className="space-y-2 text-xs">
+          <div className="text-slate-400 font-mono">Abdurrahman Security Terminal - Offensive Suite v2.4:</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-300 font-mono">
+            <div><span className="text-[#00ff66] font-bold">labs</span> - List all 12 CTF challenges & quick attack shortcuts</div>
+            <div><span className="text-[#00ff66] font-bold">whoami</span> - Inspect active security researcher identity</div>
+            <div><span className="text-[#00ff66] font-bold">skills</span> - Offensive & defensive domain mastery matrix</div>
+            <div><span className="text-[#00ff66] font-bold">ls</span> - List files, scripts, and local challenge directories</div>
+            <div><span className="text-[#00ff66] font-bold">cat &lt;file&gt;</span> - Inspect file contents (flag.txt, notes.txt, /etc/crontab)</div>
+            <div><span className="text-[#00ff66] font-bold">nmap &lt;target&gt;</span> - Port & SYN stealth reconnaissance scanner</div>
+            <div><span className="text-[#00ff66] font-bold">gobuster / ffuf</span> - High-speed web directory & endpoint fuzzer</div>
+            <div><span className="text-[#00ff66] font-bold">curl &lt;url/opts&gt;</span> - HTTP client (supports SQLi, RCE, & JWT payloads)</div>
+            <div><span className="text-[#00ff66] font-bold">sqlmap &lt;target&gt;</span> - Automated SQL injection exploitation engine</div>
+            <div><span className="text-[#00ff66] font-bold">nc &lt;ip&gt; &lt;port&gt;</span> - Netcat TCP banner grabber & socket debugger</div>
+            <div><span className="text-[#00ff66] font-bold">dig / dnsrecon</span> - DNS nameserver query & AXFR zone transfer</div>
+            <div><span className="text-[#00ff66] font-bold">ftp &lt;target&gt;</span> - Connect to anonymous or credentialed FTP daemons</div>
+            <div><span className="text-[#00ff66] font-bold">find / -perm ...</span> - Locate SUID/SGID privilege escalation binaries</div>
+            <div><span className="text-[#00ff66] font-bold">sudo -l / sudo vim</span> - Audit sudoers permissions & GTFOBins escapes</div>
+            <div><span className="text-[#00ff66] font-bold">getcap / python3</span> - Audit Linux capabilities & kernel privileges</div>
+            <div><span className="text-[#00ff66] font-bold">theme</span> - Toggle neon accent colors (green/red/cyan)</div>
+            <div><span className="text-[#00ff66] font-bold">clear</span> - Clear terminal session output</div>
+          </div>
+          <div className="text-[11px] text-slate-500 pt-1 border-t border-slate-800">
+            Tip: You can run ANY suggested command from the labs above, or type <span className="text-[#00ff66]">labs</span> to attack any target!
+          </div>
+        </div>
+      );
+    }
+    // 2. LABS CATALOGUE / SHORTCUTS
+    else if (cmd === 'labs' || cmd === 'targets' || cmd === 'list-labs') {
+      outputNode = (
+        <div className="space-y-2 text-xs font-mono">
+          <div className="text-[#00ff66] font-bold">Active CTF Targets & Exploitation Dispatcher (12 Labs):</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-300">
+            {LABS_DATA.map(l => {
+              const isSolved = solvedLabs.includes(l.id);
+              return (
+                <div key={l.id} className="p-2 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between gap-2">
+                  <div>
+                    <div className="font-bold text-white flex items-center gap-1.5">
+                      <span>{l.title.split(':')[0]}</span>
+                      {isSolved && <span className="text-[#00ff66] text-[10px] font-bold">[SOLVED]</span>}
+                    </div>
+                    <div className="text-[11px] text-slate-400">{l.target} · {l.category}</div>
+                  </div>
+                  <button
+                    onClick={() => {
+                      executeTerminalCommand(l.suggestedCommands[0]);
+                    }}
+                    className="px-2 py-1 rounded bg-[#00ff66] hover:bg-[#00ff66]/90 text-black text-[10px] font-bold whitespace-nowrap cursor-pointer transition-colors"
+                  >
+                    ⚡ Attack
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+    // 3. WHOAMI
+    else if (cmd === 'whoami') {
+      outputNode = (
+        <div className="text-xs text-slate-300 font-mono">
+          <span className="text-[#00ff66] font-semibold">abdurrahman</span> (Security Researcher, Lab Architect & CTF Maintainer)<br />
+          <span className="text-slate-500">Privileges: standard_user (wheel group) · Host: ctf-labs · Shell: /bin/bash</span>
+        </div>
+      );
+    }
+    // 4. SKILLS
+    else if (cmd === 'skills') {
+      outputNode = (
+        <div className="text-xs space-y-2 text-slate-300 font-mono">
+          <div className="text-[#00ff66] font-bold border-b border-slate-800 pb-1">Abdurrahman - Technical Domain Matrix:</div>
+          <div className="space-y-1">
+            <p><span className="text-amber-400 font-semibold">[Enumeration & Recon]:</span> Network Discovery, Nmap NSE Scripting, Service Banner Grabbing, Directory Busting (Gobuster/ffuf), DNS Zone Transfers (AXFR), OSINT.</p>
+            <p><span className="text-[#ff2a5f] font-semibold">[Web Exploitation]:</span> SQL Injection (UNION / Blind / Error-based), Cross-Site Scripting (Stored / DOM), Command Injection, Burp Suite Tampering, JWT None-Alg Forgery, Auth Bypass.</p>
+            <p><span className="text-[#00f0ff] font-semibold">[Linux Fundamentals]:</span> POSIX Permissions, SUID/SGID Exploitation, Sudoers NOPASSWD Escapes, GTFOBins, Cron Wildcard Injection, Kernel Auditing, Bash Automation.</p>
+            <p><span className="text-emerald-400 font-semibold">[Red Team Engineering]:</span> Payload Obfuscation, Reverse Shell Architecture, Host Hardening & Post-Exploitation.</p>
+          </div>
+        </div>
+      );
+    }
+    // 5. LS
+    else if (cmd === 'ls') {
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 flex flex-wrap gap-4">
+          <span className="text-red-400 font-semibold">flag.txt</span>
+          <span className="text-amber-300 font-semibold">notes.txt</span>
+          <span className="text-blue-400 font-semibold">recon_targets.nmap</span>
+          <span className="text-purple-400 font-semibold">tools/</span>
+          <span className="text-emerald-400 font-semibold">exploits/</span>
+          <span className="text-cyan-400 font-semibold">labs/</span>
+        </div>
+      );
+    }
+    // 6. PWD
+    else if (cmd === 'pwd') {
+      outputNode = <div className="text-xs font-mono text-slate-300">/home/abdurrahman</div>;
+    }
+    // 7. UNAME
+    else if (cmd === 'uname') {
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300">
+          Linux ctf-labs 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul 10 17:35:48 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux
+        </div>
+      );
+    }
+    // 8. ID
+    else if (cmd === 'id') {
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300">
+          uid=1000(abdurrahman) gid=1000(abdurrahman) groups=1000(abdurrahman),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),110(lxd)
+        </div>
+      );
+    }
+    // 9. THEME
+    else if (cmd === 'theme') {
+      if (terminalTheme === 'green') setTerminalTheme('red');
+      else if (terminalTheme === 'red') setTerminalTheme('cyan');
+      else setTerminalTheme('green');
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300">
+          Terminal theme toggled. Active accent: <span className="font-bold text-white">{terminalTheme === 'green' ? 'Crimson Red' : terminalTheme === 'red' ? 'Cyber Cyan' : 'Neon Green'}</span>
+        </div>
+      );
+    }
+    // 10. GOBUSTER / FFUF / DIRBUSTER (enum-02)
+    else if (cmd === 'gobuster' || cmd === 'ffuf' || lower.includes('gobuster') || lower.includes('ffuf')) {
+      capturedFlag = {
+        labId: 'enum-02',
+        labTitle: 'DirBuster Prime: Web Endpoint Fuzzing',
+        flag: 'CTF{gobuster_hidden_admin_git_leak}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-[#00ff66] font-bold">===============================================================</div>
+          <div className="text-[#00ff66] font-bold">Gobuster v3.6 - High Speed Web Directory & File Bruteforcer</div>
+          <div className="text-[#00ff66] font-bold">===============================================================</div>
+          <div>[+] Target URL:          http://target.corp:8080/</div>
+          <div>[+] Method:              DIR</div>
+          <div>[+] Wordlist:            /usr/share/wordlists/dirb/common.txt</div>
+          <div>[+] Extensions:          php, txt, bak, git</div>
+          <div className="text-slate-500">---------------------------------------------------------------</div>
+          <div>/.git/HEAD           (Status: 200) [Size: 41]</div>
+          <div>/index.html          (Status: 200) [Size: 1420]</div>
+          <div>/assets              (Status: 301) [Size: 178]</div>
+          <div className="text-amber-300 font-semibold">/.secret_admin       (Status: 301) [Size: 182] --&gt; Discovered hidden endpoint</div>
+          <div className="text-[#00ff66] font-bold">/.secret_admin/flag.txt (Status: 200) [Size: 42] --&gt; [!] SECRET FLAG DISCLOSED!</div>
+          <div className="text-slate-500">---------------------------------------------------------------</div>
+          <div>[+] Extraction: curl http://target.corp:8080/.secret_admin/flag.txt</div>
+          <div className="text-[#00ff66] font-bold bg-black/60 p-1.5 rounded inline-block mt-1">
+            FLAG: CTF&#123;gobuster_hidden_admin_git_leak&#125;
+          </div>
+        </div>
+      );
+    }
+    // 11. SQLMAP (web-01)
+    else if (cmd === 'sqlmap' || lower.includes('sqlmap')) {
+      capturedFlag = {
+        labId: 'web-01',
+        labTitle: 'SQLi Gateway: Union-Based Authentication Bypass',
+        flag: 'CTF{union_sqli_admin_hash_retrieved}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-red-400 font-bold">[*] sqlmap/1.8.2#stable - automatic SQL injection tool</div>
+          <div>[*] Target: http://auth.target.corp/login (POST: username, password)</div>
+          <div>[+] Parameter 'username' is vulnerable to boolean-based blind, error-based, AND UNION query!</div>
+          <div>[*] Back-end DBMS: MySQL &gt;= 5.0.12</div>
+          <div>[+] Retrieving database table: 'system_flags'</div>
+          <div className="text-slate-200 mt-1">Database: ctf_corp_db | Table: system_flags [1 entry]</div>
+          <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold">
+            +----+-----------------------------------------------------+<br />
+            | id | flag_data                                           |<br />
+            +----+-----------------------------------------------------+<br />
+            | 1  | CTF&#123;union_sqli_admin_hash_retrieved&#125;                 |<br />
+            +----+-----------------------------------------------------+
+          </div>
+        </div>
+      );
+    }
+    // 12. CURL
+    else if (cmd === 'curl' || lower.startsWith('curl')) {
+      if (lower.includes('login') || lower.includes("1=1") || lower.includes("admin'")) {
+        capturedFlag = {
+          labId: 'web-01',
+          labTitle: 'SQLi Gateway: Union-Based Authentication Bypass',
+          flag: 'CTF{union_sqli_admin_hash_retrieved}'
+        };
         outputNode = (
-          <div className="space-y-1 text-xs">
-            <div className="text-slate-400 mb-2">Available System Commands:</div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-              <div><span className="text-[#00ff66] font-mono font-bold">help</span> - Display this command index</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">whoami</span> - Inspect active security researcher identity</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">skills</span> - Breakdown of offensive & defensive domains</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">ls</span> - List directory manifests and challenges</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">cat flag.txt</span> - Inspect root platform verification flag</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">cat notes.txt</span> - Read Abdurrahman's offensive methodology notes</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">nmap [target]</span> - Execute simulated network port scanner</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">sudo -l</span> - Audit elevated administrative permissions</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">uname -a</span> - View Linux system kernel details</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">theme</span> - Toggle neon accent colors (green/red/cyan)</div>
-              <div><span className="text-[#00ff66] font-mono font-bold">clear</span> - Clear terminal session output</div>
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">HTTP/1.1 200 OK</div>
+            <div>Server: Apache/2.4.52 (Ubuntu)</div>
+            <div>Set-Cookie: session_auth=ROOT_ADMIN_TOKEN_99182; Path=/</div>
+            <div className="text-slate-400">Content-Type: application/json</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              &#123;"status":"authenticated","role":"super_admin","system_flag":"CTF&#123;union_sqli_admin_hash_retrieved&#125;"&#125;
             </div>
           </div>
         );
-        break;
-
-      case 'whoami':
+      } else if (lower.includes('ping') || lower.includes('passwd') || lower.includes('whoami') || lower.includes(';')) {
+        capturedFlag = {
+          labId: 'web-03',
+          labTitle: 'Remote Command Injection via Ping Utility',
+          flag: 'CTF{rce_semicolon_cat_passwd_pwned}'
+        };
         outputNode = (
-          <div className="text-xs text-slate-300">
-            <span className="text-[#00ff66] font-semibold">abdurrahman</span> (Security Researcher, Lab Architect & CTF Maintainer)<br />
-            <span className="text-slate-500">Privileges: standard_user (wheel group) · Context: ctf-labs / offensive-ops</span>
-          </div>
-        );
-        break;
-
-      case 'skills':
-        outputNode = (
-          <div className="text-xs space-y-2 text-slate-300">
-            <div className="text-[#00ff66] font-bold border-b border-slate-800 pb-1">Abdurrahman - Technical Domain Matrix:</div>
-            <div className="space-y-1">
-              <p><span className="text-amber-400 font-semibold">[Enumeration & Recon]:</span> Network Discovery, Nmap NSE Scripting, Service Banner Grabbing, Directory Busting (Gobuster/ffuf), DNS Zone Transfers (AXFR), OSINT.</p>
-              <p><span className="text-[#ff2a5f] font-semibold">[Web Exploitation]:</span> SQL Injection (UNION / Blind / Error-based), Cross-Site Scripting (Stored / DOM), Command Injection, Burp Suite Tampering, JWT None-Alg Forgery, Auth Bypass.</p>
-              <p><span className="text-[#00f0ff] font-semibold">[Linux Fundamentals]:</span> POSIX Permissions, SUID/SGID Exploitation, Sudoers NOPASSWD Escapes, GTFOBins, Cron Wildcard Injection, Kernel Auditing, Bash Automation.</p>
-              <p><span className="text-emerald-400 font-semibold">[Red Team Engineering]:</span> Payload Obfuscation, Reverse Shell Architecture, Host Hardening & Post-Exploitation.</p>
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div>PING 127.0.0.1 (127.0.0.1) 56(84) bytes of data.</div>
+            <div>64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 time=0.042 ms</div>
+            <div className="text-amber-400 font-bold mt-1">--- Arbitrary Command Injection Output ---</div>
+            <div className="text-slate-400">root:x:0:0:root:/root:/bin/bash</div>
+            <div className="text-slate-400">www-data:x:33:33:www-data:/var/www:/usr/sbin/nologin</div>
+            <div className="text-slate-400">student:x:1000:1000:student:/home/student:/bin/bash</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              [+] /flag.txt read successfully: CTF&#123;rce_semicolon_cat_passwd_pwned&#125;
             </div>
           </div>
         );
-        break;
-
-      case 'ls':
+      } else if (lower.includes('admin/flag') || lower.includes('bearer') || lower.includes('jwt')) {
+        capturedFlag = {
+          labId: 'web-04',
+          labTitle: 'Burp Suite Tamper: JWT Algorithm "None"',
+          flag: 'CTF{jwt_alg_none_privilege_hijack}'
+        };
         outputNode = (
-          <div className="text-xs font-mono text-slate-300 flex flex-wrap gap-4">
-            <span className="text-red-400 font-semibold">flag.txt</span>
-            <span className="text-amber-300 font-semibold">notes.txt</span>
-            <span className="text-blue-400 font-semibold">recon_targets.nmap</span>
-            <span className="text-purple-400 font-semibold">tools/</span>
-            <span className="text-emerald-400 font-semibold">exploits/</span>
-            <span className="text-cyan-400 font-semibold">labs/</span>
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">HTTP/1.1 200 OK</div>
+            <div>Content-Type: application/json</div>
+            <div>X-Token-Verification: Bypassed (Algorithm: none accepted)</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              &#123;"status":"success","user":"abdurrahman","role":"admin","flag":"CTF&#123;jwt_alg_none_privilege_hijack&#125;"&#125;
+            </div>
           </div>
         );
-        break;
-
-      case 'cat':
-        if (subArg === 'flag.txt') {
-          outputNode = (
-            <div className="text-xs p-2 rounded bg-red-950/40 border border-[#ff2a5f]/40 font-mono text-[#ff2a5f]">
-              [+] TERMINAL ROOT FLAG RETRIEVED:<br />
-              <span className="font-bold text-white bg-black/60 px-2 py-0.5 rounded inline-block mt-1">
-                CTF&#123;abdurrahman_terminal_master_0x7f9a&#125;
-              </span>
+      } else if (lower.includes('.git') || lower.includes('target.corp')) {
+        capturedFlag = {
+          labId: 'enum-02',
+          labTitle: 'DirBuster Prime: Web Endpoint Fuzzing',
+          flag: 'CTF{gobuster_hidden_admin_git_leak}'
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div>HTTP/1.1 200 OK</div>
+            <div>ref: refs/heads/master</div>
+            <div className="text-amber-400">Git repository verified exposed! Discovered /.secret_admin/flag.txt:</div>
+            <div className="text-[#00ff66] font-bold bg-black/60 p-1.5 rounded inline-block mt-1">
+              CTF&#123;gobuster_hidden_admin_git_leak&#125;
             </div>
-          );
-        } else if (subArg === 'notes.txt') {
-          outputNode = (
-            <div className="text-xs text-slate-300 space-y-1 font-mono">
-              <div className="text-amber-400 font-semibold">--- FIELD METHODOLOGY NOTES : ABDURRAHMAN ---</div>
-              <div>1. Always start with comprehensive passive enumeration before active socket scans.</div>
-              <div>2. When auditing web endpoints, capture and inspect every request header in Burp Suite.</div>
-              <div>3. On Linux targets, always run 'sudo -l' and check 'find / -perm -4000 2&gt;/dev/null'.</div>
-              <div>4. Persistence is key. The flag is always hidden where the developer least expects it.</div>
+          </div>
+        );
+      } else {
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div>HTTP/1.1 200 OK</div>
+            <div>Date: {new Date().toUTCString()}</div>
+            <div>Server: Nginx / Apache target cluster</div>
+            <div>Content-Length: 1024</div>
+            <div className="text-slate-400">&lt;!-- Target endpoint active. Test specific paths or payloads --&gt;</div>
+          </div>
+        );
+      }
+    }
+    // 13. NC / NETCAT
+    else if (cmd === 'nc' || cmd === 'netcat' || lower.startsWith('nc ') || lower.startsWith('netcat ')) {
+      if (lower.includes('8080') || lower.includes('110.24')) {
+        capturedFlag = {
+          labId: 'recon-101',
+          labTitle: 'Recon-101: TCP Port & Service Enumeration',
+          flag: 'CTF{nmap_syn_stealth_revealed_2280}'
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">Connection to 10.10.110.24 8080 port [tcp/http-alt] succeeded!</div>
+            <div>HTTP/1.0 200 OK</div>
+            <div>Server: CyberTest Debug Listener v1.4</div>
+            <div className="text-[#00ff66] font-bold">X-Challenge-Flag: CTF&#123;nmap_syn_stealth_revealed_2280&#125;</div>
+            <div className="text-slate-400 mt-1">Raw GET banner interrogation captured target header flag.</div>
+          </div>
+        );
+      } else if (lower.includes('21') || lower.includes('110.45')) {
+        capturedFlag = {
+          labId: 'enum-03',
+          labTitle: 'Banner Grab & Anonymous FTP Enumeration',
+          flag: 'CTF{anon_ftp_banner_loot_unlocked}'
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">Connection to 10.10.110.45 21 port [tcp/ftp] succeeded!</div>
+            <div>220 (vsFTPd 3.0.3) - Anonymous access permitted.</div>
+            <div>220-Notice: Backup archive flag present in /pub/.backup_credentials.txt:</div>
+            <div className="text-[#00ff66] font-bold">220 CTF&#123;anon_ftp_banner_loot_unlocked&#125;</div>
+          </div>
+        );
+      } else {
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300">
+            Connection to {subArg || 'target host'} succeeded! Interactive socket channel opened.
+          </div>
+        );
+      }
+    }
+    // 14. FTP
+    else if (cmd === 'ftp' || lower.startsWith('ftp')) {
+      capturedFlag = {
+        labId: 'enum-03',
+        labTitle: 'Banner Grab & Anonymous FTP Enumeration',
+        flag: 'CTF{anon_ftp_banner_loot_unlocked}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div>Connected to 10.10.110.45.</div>
+          <div>220 vsFTPd 3.0.3 - Anonymous access enabled.</div>
+          <div>Name (10.10.110.45:abdurrahman): anonymous</div>
+          <div>331 Please specify the password: anonymous@ctf.local</div>
+          <div>230 Login successful. Using binary mode to transfer files.</div>
+          <div className="text-amber-400">ftp&gt; ls -la</div>
+          <div>-rw-r--r-- 1 root root 44 Sep 23 .backup_credentials.txt</div>
+          <div>ftp&gt; get .backup_credentials.txt</div>
+          <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+            226 Transfer complete. Flag: CTF&#123;anon_ftp_banner_loot_unlocked&#125;
+          </div>
+        </div>
+      );
+    }
+    // 15. DIG / HOST / DNSRECON (enum-04)
+    else if (cmd === 'dig' || cmd === 'host' || cmd === 'dnsrecon' || lower.includes('axfr')) {
+      capturedFlag = {
+        labId: 'enum-04',
+        labTitle: 'DNS Reconnaissance & Zone Transfer Exploit',
+        flag: 'CTF{axfr_zone_transfer_domain_spill}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-emerald-400 font-bold">; &lt;&lt;&gt;&gt; DiG 9.18.18 &lt;&lt;&gt;&gt; @ns1.shadowcorp.net shadowcorp.net AXFR</div>
+          <div>shadowcorp.net.         86400   IN   SOA   ns1.shadowcorp.net. admin.shadowcorp.net.</div>
+          <div>shadowcorp.net.         86400   IN   NS    ns1.shadowcorp.net.</div>
+          <div>gateway.shadowcorp.net. 86400   IN   A     10.10.50.1</div>
+          <div>vpn.shadowcorp.net.     86400   IN   A     10.10.50.2</div>
+          <div className="text-[#00ff66] font-bold">dev-internal.shadowcorp.net. 86400 IN TXT "CTF&#123;axfr_zone_transfer_domain_spill&#125;"</div>
+          <div className="text-slate-400 mt-1">;; AXFR transfer successful! 17 internal records recovered.</div>
+        </div>
+      );
+    }
+    // 16. FIND (linux-01)
+    else if (cmd === 'find' || lower.startsWith('/usr/bin/find') || lower.startsWith('find ')) {
+      if (lower.includes('-exec') || lower.includes('/bin/sh') || lower.includes('/bin/bash')) {
+        capturedFlag = {
+          labId: 'linux-01',
+          labTitle: 'POSIX Permissions & SUID Binary Hunting',
+          flag: 'CTF{suid_bit_find_exec_root_shell}'
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">[+] Spawning elevated root subshell via /usr/bin/find SUID...</div>
+            <div className="text-slate-100"># whoami</div>
+            <div className="text-slate-300">root (euid=0)</div>
+            <div className="text-slate-100"># cat /root/flag.txt</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              CTF&#123;suid_bit_find_exec_root_shell&#125;
             </div>
-          );
-        } else if (subArg === 'recon_targets.nmap') {
-          outputNode = (
-            <div className="text-xs text-slate-300 font-mono">
-              # Nmap 7.94 scan initiated<br />
-              Nmap scan report for 10.10.110.24<br />
-              Host is up (0.0021s latency).<br />
-              PORT     STATE SERVICE VERSION<br />
-              22/tcp   open  ssh     OpenSSH 8.9p1<br />
-              80/tcp   open  http    nginx 1.18.0<br />
-              8080/tcp open  http    Apache Tomcat 9.0.41
+          </div>
+        );
+      } else {
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-slate-400">--- Searching SUID binaries (find / -perm -4000) ---</div>
+            <div>/usr/bin/passwd</div>
+            <div>/usr/bin/chfn</div>
+            <div>/usr/bin/gpasswd</div>
+            <div className="text-red-400 font-bold">/usr/bin/find  &lt;--- [!] Atypical SUID binary owned by root (-rwsr-xr-x)!</div>
+            <div>/usr/bin/sudo</div>
+            <div className="text-slate-400 mt-1">Execute: /usr/bin/find . -exec /bin/sh -p \; -quit to escape!</div>
+          </div>
+        );
+      }
+    }
+    // 17. SUDO (linux-02)
+    else if (cmd === 'sudo' || lower.startsWith('sudo ')) {
+      if (lower.includes('vim') || lower.includes('-c') || lower.includes('less')) {
+        capturedFlag = {
+          labId: 'linux-02',
+          labTitle: 'Sudoers Misconfiguration & GTFOBins Escalation',
+          flag: 'CTF{gtfobins_sudo_nopasswd_escalated}'
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">[+] Executing: sudo /usr/bin/vim -c ':!/bin/bash'</div>
+            <div className="text-slate-400">Dropping into root shell with EUID=0...</div>
+            <div className="text-white font-bold">root@ctf-labs:~# cat /root/root_flag.txt</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              CTF&#123;gtfobins_sudo_nopasswd_escalated&#125;
             </div>
-          );
-        } else if (!subArg) {
-          outputNode = <div className="text-xs text-amber-400">Usage: cat &lt;filename&gt; (e.g. cat flag.txt)</div>;
-        } else {
-          outputNode = <div className="text-xs text-red-400">cat: {subArg}: No such file or directory</div>;
-          isError = true;
-        }
-        break;
-
-      case 'nmap':
+          </div>
+        );
+      } else {
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div>Matching Defaults entries for abdurrahman on ctf-labs:</div>
+            <div className="text-slate-400">    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin</div>
+            <div className="mt-1">User abdurrahman may run the following commands on ctf-labs:</div>
+            <div className="text-[#00ff66] font-bold">    (root) NOPASSWD: /usr/bin/find, /usr/bin/vim /var/log/syslog</div>
+            <div className="text-slate-400 mt-1">Tip: Run 'sudo vim -c \':!/bin/bash\'' to escape to root!</div>
+          </div>
+        );
+      }
+    }
+    // 18. TAR / CRONTAB / WILDCARD (linux-03)
+    else if (cmd === 'tar' || lower.includes('checkpoint') || lower.includes('backup.tar.gz')) {
+      capturedFlag = {
+        labId: 'linux-03',
+        labTitle: 'Cron Job Hijacking & Wildcard Injection',
+        flag: 'CTF{cron_wildcard_tar_privesc_complete}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-amber-400 font-bold">[+] Unix Wildcard Injection Prepared in /var/backups</div>
+          <div>Created: --checkpoint=1</div>
+          <div>Created: --checkpoint-action=exec=sh shell.sh</div>
+          <div className="text-emerald-400 font-bold mt-1">[*] Cron task fired: cd /var/backups &amp;&amp; tar -czf backup.tar.gz *</div>
+          <div>Tar evaluated checkpoint arguments as flags! /bin/bash SUID set.</div>
+          <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+            Root shell obtained (/bin/bash -p): CTF&#123;cron_wildcard_tar_privesc_complete&#125;
+          </div>
+        </div>
+      );
+    }
+    // 19. GETCAP / LINPEAS / PYTHON CAPABILITIES (linux-04)
+    else if (cmd === 'getcap' || lower.includes('python') || lower.includes('linpeas') || lower.includes('cap_setuid')) {
+      capturedFlag = {
+        labId: 'linux-04',
+        labTitle: 'Automated Recon Scripting & Kernel Auditing',
+        flag: 'CTF{bash_audit_linpeas_kernel_mastery}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-slate-400">--- Auditing POSIX File Capabilities (getcap -r /) ---</div>
+          <div>/usr/bin/ping = cap_net_raw+ep</div>
+          <div className="text-red-400 font-bold">/usr/bin/python3.10 = cap_setuid+ep  &lt;--- [!] SetUID capability enabled!</div>
+          <div className="text-emerald-400 font-bold mt-1">[+] Executing: python3 -c 'import os; os.setuid(0); os.system("/bin/bash")'</div>
+          <div className="text-white">root@ctf-labs:/home/abdurrahman# id</div>
+          <div>uid=0(root) gid=0(root) groups=0(root)</div>
+          <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+            CTF&#123;bash_audit_linpeas_kernel_mastery&#125;
+          </div>
+        </div>
+      );
+    }
+    // 20. XSS PAYLOADS (web-02)
+    else if (lower.includes('<img') || lower.includes('<svg') || lower.includes('<script') || lower.includes('document.cookie')) {
+      capturedFlag = {
+        labId: 'web-02',
+        labTitle: 'XSS Vector Lab: Stored & DOM-Based Payloads',
+        flag: 'CTF{xss_stored_cookie_intercept_882}'
+      };
+      outputNode = (
+        <div className="text-xs font-mono text-slate-300 space-y-1">
+          <div className="text-emerald-400 font-bold">[+] Stored XSS payload rendered into feedback portal!</div>
+          <div>Automated simulated admin bot viewed submission in headless browser...</div>
+          <div className="text-amber-300">[+] Incoming Webhook from target browser: document.cookie intercepted!</div>
+          <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+            Cookie: session_admin=98a1f; flag=CTF&#123;xss_stored_cookie_intercept_882&#125;
+          </div>
+        </div>
+      );
+    }
+    // 21. CAT
+    else if (cmd === 'cat') {
+      if (subArg === 'flag.txt') {
+        outputNode = (
+          <div className="text-xs p-2 rounded bg-red-950/40 border border-[#ff2a5f]/40 font-mono text-[#ff2a5f]">
+            [+] TERMINAL ROOT FLAG RETRIEVED:<br />
+            <span className="font-bold text-white bg-black/60 px-2 py-0.5 rounded inline-block mt-1">
+              CTF&#123;abdurrahman_terminal_master_0x7f9a&#125;
+            </span>
+          </div>
+        );
+      } else if (subArg === 'notes.txt') {
+        outputNode = (
+          <div className="text-xs text-slate-300 space-y-1 font-mono">
+            <div className="text-amber-400 font-semibold">--- FIELD METHODOLOGY NOTES : ABDURRAHMAN ---</div>
+            <div>1. Always start with comprehensive passive enumeration before active socket scans.</div>
+            <div>2. When auditing web endpoints, capture and inspect every request header in Burp Suite.</div>
+            <div>3. On Linux targets, always run 'sudo -l' and check 'find / -perm -4000 2&gt;/dev/null'.</div>
+            <div>4. Persistence is key. The flag is always hidden where the developer least expects it.</div>
+          </div>
+        );
+      } else if (subArg === 'recon_targets.nmap') {
+        outputNode = (
+          <div className="text-xs text-slate-300 font-mono">
+            # Nmap 7.94 scan initiated<br />
+            Nmap scan report for 10.10.110.24<br />
+            Host is up (0.0021s latency).<br />
+            PORT     STATE SERVICE VERSION<br />
+            22/tcp   open  ssh     OpenSSH 8.9p1<br />
+            80/tcp   open  http    nginx 1.18.0<br />
+            8080/tcp open  http    Apache Tomcat 9.0.41
+          </div>
+        );
+      } else if (subArg.includes('crontab')) {
+        outputNode = (
+          <div className="text-xs text-slate-300 font-mono space-y-1">
+            <div># /etc/crontab: system-wide crontab</div>
+            <div>SHELL=/bin/sh</div>
+            <div>PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin</div>
+            <div className="text-red-400 font-bold">*/2 * * * * root cd /var/backups &amp;&amp; tar -czf backup.tar.gz *</div>
+            <div className="text-slate-400 mt-1">Vulnerable wildcard asterisk in tar command detected!</div>
+          </div>
+        );
+      } else if (subArg.includes('root_flag.txt') || subArg.includes('flag')) {
+        outputNode = (
+          <div className="text-xs font-mono text-[#00ff66] font-bold p-2 bg-black/60 rounded border border-slate-800">
+            CTF&#123;gtfobins_sudo_nopasswd_escalated&#125;
+          </div>
+        );
+      } else if (!subArg) {
+        outputNode = <div className="text-xs text-amber-400">Usage: cat &lt;filename&gt; (e.g. cat flag.txt)</div>;
+      } else {
+        outputNode = <div className="text-xs text-red-400">cat: {subArg}: No such file or directory</div>;
+        isError = true;
+      }
+    }
+    // 22. NMAP
+    else if (cmd === 'nmap' || lower.startsWith('nmap ')) {
+      if (lower.includes('110.45') || lower.includes('ftp')) {
+        capturedFlag = {
+          labId: 'enum-03',
+          labTitle: 'Banner Grab & Anonymous FTP Enumeration',
+          flag: 'CTF{anon_ftp_banner_loot_unlocked}'
+        };
+        outputNode = (
+          <div className="text-xs text-slate-300 font-mono space-y-1">
+            <div className="text-emerald-400">Starting Nmap 7.94 scan against 10.10.110.45</div>
+            <div>PORT   STATE SERVICE VERSION</div>
+            <div className="text-[#00ff66] font-bold">21/tcp open  ftp     vsftpd 3.0.3 (Anonymous access allowed!)</div>
+            <div>| ftp-anon: Anonymous FTP login allowed (FTP code 230)</div>
+            <div>|_ -rw-r--r-- 1 0 0 44 Sep 23 .backup_credentials.txt</div>
+            <div className="text-[#00ff66] font-bold bg-black/60 p-1.5 rounded inline-block mt-1">
+              FLAG: CTF&#123;anon_ftp_banner_loot_unlocked&#125;
+            </div>
+          </div>
+        );
+      } else {
+        capturedFlag = {
+          labId: 'recon-101',
+          labTitle: 'Recon-101: TCP Port & Service Enumeration',
+          flag: 'CTF{nmap_syn_stealth_revealed_2280}'
+        };
         outputNode = (
           <div className="text-xs text-slate-300 font-mono space-y-1">
             <div className="text-emerald-400">Starting Nmap 7.94 ( https://nmap.org ) at {new Date().toISOString()}</div>
@@ -645,70 +1155,113 @@ export default function App() {
             <div>Host is up (0.00045s latency).</div>
             <div>Not shown: 997 closed tcp ports (reset)</div>
             <div className="mt-1 text-slate-200">PORT     STATE SERVICE     VERSION</div>
-            <div>21/tcp   open  ftp         vsftpd 3.0.3 (Anonymous access allowed)</div>
+            <div>22/tcp   open  ssh         OpenSSH 8.9p1</div>
             <div>80/tcp   open  http        Apache httpd 2.4.52</div>
-            <div>8080/tcp open  http-proxy  Node.js Express framework</div>
-            <div className="text-slate-400 mt-1">Service detection performed. 1 target host verified up.</div>
-          </div>
-        );
-        break;
-
-      case 'sudo':
-        if (subArg === '-l') {
-          outputNode = (
-            <div className="text-xs font-mono text-slate-300 space-y-1">
-              <div>Matching Defaults entries for abdurrahman on ctf-labs:</div>
-              <div className="text-slate-400">    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin</div>
-              <div className="mt-1">User abdurrahman may run the following commands on ctf-labs:</div>
-              <div className="text-[#00ff66] font-bold">    (root) NOPASSWD: /usr/bin/find, /usr/bin/vim /var/log/syslog</div>
+            <div className="text-[#00ff66] font-bold">8080/tcp open  http-alt    CyberTest Debug Listener (Flag in header!)</div>
+            <div className="p-2 rounded bg-black/60 border border-slate-800 text-[#00ff66] font-bold mt-1">
+              [+] Banner Probe: CTF&#123;nmap_syn_stealth_revealed_2280&#125;
             </div>
-          );
-        } else {
-          outputNode = <div className="text-xs text-slate-400">Try running: sudo -l to inspect administrative delegations.</div>;
-        }
-        break;
-
-      case 'uname':
-        outputNode = (
-          <div className="text-xs font-mono text-slate-300">
-            Linux ctf-labs 6.8.0-45-generic #45-Ubuntu SMP PREEMPT_DYNAMIC Wed Jul 10 17:35:48 UTC 2024 x86_64 x86_64 x86_64 GNU/Linux
           </div>
         );
-        break;
-
-      case 'pwd':
-        outputNode = <div className="text-xs font-mono text-slate-300">/home/abdurrahman</div>;
-        break;
-
-      case 'theme':
-        if (terminalTheme === 'green') setTerminalTheme('red');
-        else if (terminalTheme === 'red') setTerminalTheme('cyan');
-        else setTerminalTheme('green');
-        outputNode = (
-          <div className="text-xs font-mono text-slate-300">
-            Terminal theme toggled. Active accent: <span className="font-bold text-white">{terminalTheme === 'green' ? 'Crimson Red' : terminalTheme === 'red' ? 'Cyber Cyan' : 'Neon Green'}</span>
-          </div>
-        );
-        break;
-
-      default:
-        outputNode = (
-          <div className="text-xs font-mono text-red-400">
-            bash: {cmd}: command not found. Type <span className="text-[#00ff66] underline">help</span> for supported interactive commands.
-          </div>
-        );
-        isError = true;
+      }
     }
+    // 23. SOLVE / ATTACK LAB DIRECT SHORTCUT
+    else if (cmd === 'solve' || cmd === 'attack' || cmd === 'run') {
+      const targetLab = LABS_DATA.find(
+        l => l.id.toLowerCase() === subArg.toLowerCase() || l.title.toLowerCase().includes(subArg.toLowerCase())
+      );
+      if (targetLab) {
+        capturedFlag = {
+          labId: targetLab.id,
+          labTitle: targetLab.title,
+          flag: targetLab.flag
+        };
+        outputNode = (
+          <div className="text-xs font-mono text-slate-300 space-y-1">
+            <div className="text-emerald-400 font-bold">[+] Auto-Exploiting Lab: {targetLab.title}</div>
+            <div>Executing primary attack vector: {targetLab.attackVector}</div>
+            <div className="text-slate-400 mt-1">Target compromised successfully! Flag retrieved below.</div>
+          </div>
+        );
+      } else {
+        outputNode = (
+          <div className="text-xs font-mono text-amber-400">
+            Usage: solve &lt;lab-id&gt; (e.g. solve recon-101, solve web-01, solve linux-02). Type 'labs' to see all IDs.
+          </div>
+        );
+      }
+    }
+    // 24. DEFAULT (COMMAND NOT FOUND)
+    else {
+      outputNode = (
+        <div className="text-xs font-mono text-red-400">
+          bash: {cmd}: command not found. Type <span className="text-[#00ff66] underline cursor-pointer" onClick={() => executeTerminalCommand('help')}>help</span> or <span className="text-[#00ff66] underline cursor-pointer" onClick={() => executeTerminalCommand('labs')}>labs</span> to view supported interactive commands.
+        </div>
+      );
+      isError = true;
+    }
+
+    if (isError) {
+      soundEngine.playError();
+    } else if (capturedFlag) {
+      soundEngine.playVictory();
+    } else {
+      soundEngine.playTerminalBeep();
+    }
+
+    // Build complete output with interactive Claim Flag banner if compromised
+    const finalOutput = (
+      <div>
+        {outputNode}
+        {capturedFlag && (
+          <div className="mt-3 p-3 rounded bg-emerald-950/70 border border-[#00ff66]/60 space-y-2 font-mono shadow-[0_0_15px_rgba(0,255,102,0.25)]">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[#00ff66] flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-[#00ff66]" />
+                TARGET COMPROMISED - FLAG CAPTURED!
+              </span>
+              <span className="text-[10px] text-slate-400">Lab: {capturedFlag.labTitle}</span>
+            </div>
+            <div className="p-2 rounded bg-black/80 border border-[#00ff66]/30 text-xs text-[#00ff66] font-bold flex items-center justify-between flex-wrap gap-2">
+              <span className="select-all">{capturedFlag.flag}</span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => handleCopy(capturedFlag!.flag)}
+                  className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 text-slate-300 border border-slate-700 text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <Copy className="w-3 h-3" />
+                  <span>Copy</span>
+                </button>
+                <button
+                  onClick={() => handleClaimFlagDirectly(capturedFlag!.labId, capturedFlag!.flag, capturedFlag!.labTitle)}
+                  className="px-3 py-1 rounded bg-[#00ff66] hover:bg-[#00ff66]/90 text-black text-[11px] font-bold font-mono flex items-center gap-1 cursor-pointer shadow-[0_0_10px_rgba(0,255,102,0.3)] transition-colors"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>{solvedLabs.includes(capturedFlag.labId) ? 'Solved ✓' : 'Claim & Mark Solved'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
 
     setTerminalHistory(prev => [
       ...prev,
       {
         id: newId,
         command: rawCmd,
-        output: outputNode,
+        output: finalOutput,
         isError
       }
     ]);
+  };
+
+  // Form submission handler for terminal prompt input
+  const handleTerminalSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!commandInput.trim()) return;
+    executeTerminalCommand(commandInput.trim());
   };
 
   // Keyboard navigation for terminal history (Up / Down arrows)
@@ -743,14 +1296,23 @@ export default function App() {
 
   // Open modal with clean state
   const openLabModal = (lab: Lab) => {
+    soundEngine.playLaunch();
     setActiveLabModal(lab);
     setFlagInput('');
     setFlagFeedback({ status: 'idle', message: '' });
     setRevealedHints([]);
   };
 
+  // Close modal with sound
+  const closeLabModal = () => {
+    soundEngine.playClose();
+    setActiveLabModal(null);
+  };
+
   // Toggle hint reveal
   const toggleHint = (index: number) => {
+    const willOpen = !revealedHints.includes(index);
+    soundEngine.playHint(willOpen);
     setRevealedHints(prev =>
       prev.includes(index) ? prev.filter(i => i !== index) : [...prev, index]
     );
@@ -776,7 +1338,11 @@ export default function App() {
         <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
           
           {/* Zone 1: Single text element wordmark */}
-          <a href="#" className="flex items-center gap-2 group">
+          <a
+            href="#"
+            onClick={() => soundEngine.playNavClick()}
+            className="flex items-center gap-2 group cursor-pointer"
+          >
             <div className="w-8 h-8 rounded bg-slate-900 border border-[#00ff66]/40 flex items-center justify-center text-[#00ff66] group-hover:border-[#00ff66] transition-colors shadow-[0_0_10px_rgba(0,255,102,0.2)]">
               <TerminalIcon className="w-4 h-4" />
             </div>
@@ -787,21 +1353,35 @@ export default function App() {
 
           {/* Zone 2: Navigation Links */}
           <nav className="hidden md:flex items-center gap-6 text-xs sm:text-sm font-medium text-slate-400">
-            <a href="#hubs" className="hover:text-white transition-colors">Category Hubs</a>
-            <a href="#labs-grid" className="hover:text-white transition-colors">Lab Grid</a>
-            <a href="#terminal-section" className="hover:text-[#00ff66] transition-colors font-mono">Terminal Simulator</a>
-            <a href="#cheatsheet" className="hover:text-white transition-colors">Field Cheatsheet</a>
+            <a href="#hubs" onClick={() => soundEngine.playNavClick()} className="hover:text-white transition-colors cursor-pointer">Category Hubs</a>
+            <a href="#labs-grid" onClick={() => soundEngine.playNavClick()} className="hover:text-white transition-colors cursor-pointer">Lab Grid</a>
+            <a href="#terminal-section" onClick={() => soundEngine.playNavClick()} className="hover:text-[#00ff66] transition-colors font-mono cursor-pointer">Terminal Simulator</a>
+            <a href="#cheatsheet" onClick={() => soundEngine.playNavClick()} className="hover:text-white transition-colors cursor-pointer">Field Cheatsheet</a>
           </nav>
 
-          {/* Zone 3: Live Status Badge & Terminal CTA */}
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:flex items-center gap-2 px-3 py-1 rounded bg-[#00ff66]/10 border border-[#00ff66]/30 text-xs text-[#00ff66] font-mono">
+          {/* Zone 3: Live Status Badge & Sound Toggle & Terminal CTA */}
+          <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={handleToggleSfx}
+              className={`px-2.5 py-1.5 rounded text-xs font-mono border transition-all flex items-center gap-1.5 cursor-pointer ${
+                sfxEnabled
+                  ? 'bg-[#00ff66]/10 border-[#00ff66]/40 text-[#00ff66] hover:bg-[#00ff66]/20 shadow-[0_0_10px_rgba(0,255,102,0.15)]'
+                  : 'bg-slate-900 border-slate-800 text-slate-500 hover:text-slate-300'
+              }`}
+              title={sfxEnabled ? "Sound Effects: ON (Click to mute)" : "Sound Effects: OFF (Click to unmute)"}
+            >
+              {sfxEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">SFX: {sfxEnabled ? 'ON' : 'OFF'}</span>
+            </button>
+
+            <div className="hidden lg:flex items-center gap-2 px-3 py-1 rounded bg-[#00ff66]/10 border border-[#00ff66]/30 text-xs text-[#00ff66] font-mono">
               <span className="w-2 h-2 rounded-full bg-[#00ff66] animate-pulse"></span>
               <span>Labs Online - Interactive Mode Enabled</span>
             </div>
             <a
               href="#terminal-section"
-              className="px-3 py-1.5 text-xs font-mono font-medium text-black bg-[#00ff66] hover:bg-[#00ff66]/90 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 shadow-[0_0_15px_rgba(0,255,102,0.3)]"
+              onClick={() => soundEngine.playLaunch()}
+              className="px-3 py-1.5 text-xs font-mono font-medium text-black bg-[#00ff66] hover:bg-[#00ff66]/90 rounded transition-colors whitespace-nowrap flex items-center gap-1.5 shadow-[0_0_15px_rgba(0,255,102,0.3)] cursor-pointer"
             >
               <TerminalIcon className="w-3.5 h-3.5" />
               <span>Shell Console</span>
@@ -882,7 +1462,10 @@ export default function App() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {/* Enumeration Hub */}
             <div 
-              onClick={() => setSelectedCategory('Enumeration')}
+              onClick={() => {
+                soundEngine.playFilterSelect();
+                setSelectedCategory('Enumeration');
+              }}
               className={`group p-5 rounded-lg border cursor-pointer transition-all ${
                 selectedCategory === 'Enumeration' 
                   ? 'bg-slate-900 border-[#00ff66] shadow-[0_0_15px_rgba(0,255,102,0.15)]' 
@@ -909,7 +1492,10 @@ export default function App() {
 
             {/* Web Exploitation Hub */}
             <div 
-              onClick={() => setSelectedCategory('Web Exploitation')}
+              onClick={() => {
+                soundEngine.playFilterSelect();
+                setSelectedCategory('Web Exploitation');
+              }}
               className={`group p-5 rounded-lg border cursor-pointer transition-all ${
                 selectedCategory === 'Web Exploitation' 
                   ? 'bg-slate-900 border-[#ff2a5f] shadow-[0_0_15px_rgba(255,42,95,0.15)]' 
@@ -936,7 +1522,10 @@ export default function App() {
 
             {/* Linux Fundamentals Hub */}
             <div 
-              onClick={() => setSelectedCategory('Linux Fundamentals')}
+              onClick={() => {
+                soundEngine.playFilterSelect();
+                setSelectedCategory('Linux Fundamentals');
+              }}
               className={`group p-5 rounded-lg border cursor-pointer transition-all ${
                 selectedCategory === 'Linux Fundamentals' 
                   ? 'bg-slate-900 border-[#00f0ff] shadow-[0_0_15px_rgba(0,240,255,0.15)]' 
@@ -978,8 +1567,11 @@ export default function App() {
               />
               {searchQuery && (
                 <button
-                  onClick={() => setSearchQuery('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+                  onClick={() => {
+                    soundEngine.playClick();
+                    setSearchQuery('');
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white cursor-pointer"
                 >
                   <X className="w-4 h-4" />
                 </button>
@@ -993,7 +1585,10 @@ export default function App() {
                 return (
                   <button
                     key={cat}
-                    onClick={() => setSelectedCategory(cat)}
+                    onClick={() => {
+                      soundEngine.playFilterSelect();
+                      setSelectedCategory(cat);
+                    }}
                     className={`px-3 py-1.5 rounded text-xs font-mono transition-all whitespace-nowrap cursor-pointer ${
                       isActive
                         ? 'bg-[#00ff66] text-black font-semibold shadow-[0_0_12px_rgba(0,255,102,0.3)]'
@@ -1014,7 +1609,10 @@ export default function App() {
               {(['All', 'Easy', 'Medium', 'Hard'] as Difficulty[]).map(diff => (
                 <button
                   key={diff}
-                  onClick={() => setSelectedDifficulty(diff)}
+                  onClick={() => {
+                    soundEngine.playFilterSelect();
+                    setSelectedDifficulty(diff);
+                  }}
                   className={`hover:text-white transition-colors cursor-pointer ${
                     selectedDifficulty === diff
                       ? 'text-[#00ff66] underline font-bold'
@@ -1041,11 +1639,12 @@ export default function App() {
               </p>
               <button
                 onClick={() => {
+                  soundEngine.playClick();
                   setSearchQuery('');
                   setSelectedCategory('All Labs');
                   setSelectedDifficulty('All');
                 }}
-                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 transition-colors"
+                className="px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-xs font-mono text-slate-200 transition-colors cursor-pointer"
               >
                 Reset All Filters
               </button>
@@ -1112,24 +1711,38 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* Bottom Action Area: Estimated Time + "Enter Lab" button */}
+                    {/* Bottom Action Area: Estimated Time + "Simulate" & "Enter Lab" buttons */}
                     <div className="pt-3 border-t border-slate-800/80 flex items-center justify-between gap-2">
                       <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
                         <Clock className="w-3 h-3" />
                         <span>{lab.estimatedTime}</span>
                       </div>
 
-                      <button
-                        onClick={() => openLabModal(lab)}
-                        className={`px-3 py-1.5 rounded text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                          isSolved
-                            ? 'bg-slate-800 hover:bg-slate-700 text-[#00ff66] border border-[#00ff66]/30'
-                            : 'bg-[#00ff66] hover:bg-[#00ff66]/90 text-black shadow-[0_0_10px_rgba(0,255,102,0.25)]'
-                        }`}
-                      >
-                        <Play className="w-3 h-3 fill-current" />
-                        <span>Enter Lab</span>
-                      </button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            runCommandInTerminal(lab.suggestedCommands[0]);
+                          }}
+                          className="px-2.5 py-1.5 rounded text-xs font-mono text-slate-300 hover:text-white bg-slate-900 hover:bg-slate-800 border border-slate-800 flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Simulate primary exploit in cyber terminal"
+                        >
+                          <TerminalIcon className="w-3 h-3 text-[#00ff66]" />
+                          <span>Simulate</span>
+                        </button>
+
+                        <button
+                          onClick={() => openLabModal(lab)}
+                          className={`px-3 py-1.5 rounded text-xs font-mono font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
+                            isSolved
+                              ? 'bg-slate-800 hover:bg-slate-700 text-[#00ff66] border border-[#00ff66]/30'
+                              : 'bg-[#00ff66] hover:bg-[#00ff66]/90 text-black shadow-[0_0_10px_rgba(0,255,102,0.25)]'
+                          }`}
+                        >
+                          <Play className="w-3 h-3 fill-current" />
+                          <span>{isSolved ? 'Review' : 'Enter Lab'}</span>
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -1155,11 +1768,12 @@ export default function App() {
               {/* Theme color cycler */}
               <button
                 onClick={() => {
+                  soundEngine.playThemeChange();
                   if (terminalTheme === 'green') setTerminalTheme('red');
                   else if (terminalTheme === 'red') setTerminalTheme('cyan');
                   else setTerminalTheme('green');
                 }}
-                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1.5 transition-colors"
+                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1.5 transition-colors cursor-pointer"
                 title="Toggle Neon Color Theme"
               >
                 <div className={`w-2 h-2 rounded-full ${terminalTheme === 'green' ? 'bg-[#00ff66]' : terminalTheme === 'red' ? 'bg-[#ff2a5f]' : 'bg-[#00f0ff]'}`}></div>
@@ -1168,8 +1782,11 @@ export default function App() {
 
               {/* Clear */}
               <button
-                onClick={() => setTerminalHistory([])}
-                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1 transition-colors"
+                onClick={() => {
+                  soundEngine.playClear();
+                  setTerminalHistory([]);
+                }}
+                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1 transition-colors cursor-pointer"
               >
                 <RotateCcw className="w-3 h-3" />
                 <span>Clear</span>
@@ -1177,8 +1794,12 @@ export default function App() {
 
               {/* Maximize */}
               <button
-                onClick={() => setIsTerminalMaximized(!isTerminalMaximized)}
-                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1 transition-colors"
+                onClick={() => {
+                  const nextState = !isTerminalMaximized;
+                  soundEngine.playMaximize(nextState);
+                  setIsTerminalMaximized(nextState);
+                }}
+                className="px-2.5 py-1 bg-slate-900 border border-slate-800 hover:border-slate-700 rounded text-xs font-mono text-slate-300 flex items-center gap-1 transition-colors cursor-pointer"
               >
                 {isTerminalMaximized ? <Minimize2 className="w-3 h-3" /> : <Maximize2 className="w-3 h-3" />}
                 <span>{isTerminalMaximized ? 'Restore' : 'Expand'}</span>
@@ -1211,7 +1832,7 @@ export default function App() {
             </div>
 
             {/* Terminal Body Screen */}
-            <div className="p-4 flex-1 overflow-y-auto space-y-3 scanlines">
+            <div ref={terminalBodyRef} className="p-4 flex-1 overflow-y-auto space-y-3 scanlines">
               {terminalHistory.map(item => (
                 <div key={item.id} className="space-y-1">
                   {/* Prompt & Executed Command */}
@@ -1237,7 +1858,6 @@ export default function App() {
                   value={commandInput}
                   onChange={e => setCommandInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  autoFocus
                   placeholder="type 'help', 'whoami', 'skills', 'ls', or 'cat flag.txt'..."
                   className="w-full bg-transparent text-slate-100 placeholder:text-slate-600 focus:outline-none caret-[#00ff66]"
                 />
@@ -1253,6 +1873,7 @@ export default function App() {
                 <button
                   key={cmd}
                   onClick={() => {
+                    soundEngine.playTerminalBeep();
                     setCommandInput(cmd);
                     terminalInputRef.current?.focus();
                   }}
@@ -1344,8 +1965,8 @@ export default function App() {
               </div>
 
               <button
-                onClick={() => setActiveLabModal(null)}
-                className="p-1.5 rounded-lg bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors"
+                onClick={closeLabModal}
+                className="p-1.5 rounded-lg bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
@@ -1377,23 +1998,45 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Suggested Terminal Commands */}
+              {/* Suggested Terminal Commands with Live Simulator Runner */}
               <div className="space-y-2">
-                <div className="text-xs font-mono text-slate-300 font-bold flex items-center justify-between">
-                  <span>Suggested Command Execution:</span>
-                  <span className="text-slate-500 font-normal">Click to copy</span>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-mono text-slate-300 font-bold">Suggested Exploitation Commands:</span>
+                  <span className="text-[11px] text-slate-500 font-mono">Run in simulator or copy</span>
                 </div>
-                <div className="space-y-1.5">
+
+                <div className="p-2.5 rounded bg-emerald-950/20 border border-[#00ff66]/20 text-[11px] font-mono text-slate-300">
+                  ⚡ <span className="text-[#00ff66] font-semibold">Live Sandbox Link:</span> Click <span className="text-white font-bold">"Run in Terminal"</span> to execute the exploit directly on <span className="text-[#00ff66]">ctf-labs</span> and retrieve the flag live!
+                </div>
+
+                <div className="space-y-2">
                   {activeLabModal.suggestedCommands.map((cmd, idx) => (
                     <div
                       key={idx}
-                      onClick={() => handleCopy(cmd)}
-                      className="p-2.5 rounded bg-black/60 border border-slate-800 hover:border-slate-700 flex items-center justify-between text-xs font-mono text-[#00ff66] cursor-pointer transition-colors group"
+                      className="p-2.5 rounded bg-black/70 border border-slate-800 hover:border-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-mono text-[#00ff66] transition-colors"
                     >
-                      <span className="truncate mr-2">$ {cmd}</span>
-                      <span className="shrink-0 text-slate-500 group-hover:text-white">
-                        {copiedText === cmd ? <Check className="w-3.5 h-3.5 text-[#00ff66]" /> : <Copy className="w-3.5 h-3.5" />}
-                      </span>
+                      <span className="truncate mr-2 select-all font-mono">$ {cmd}</span>
+                      <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto">
+                        <button
+                          type="button"
+                          onClick={() => handleCopy(cmd)}
+                          className="px-2 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-800 text-[11px] font-mono text-slate-300 hover:text-white flex items-center gap-1 cursor-pointer transition-colors"
+                          title="Copy command to clipboard"
+                        >
+                          {copiedText === cmd ? <Check className="w-3 h-3 text-[#00ff66]" /> : <Copy className="w-3 h-3" />}
+                          <span>{copiedText === cmd ? 'Copied' : 'Copy'}</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => runCommandInTerminal(cmd)}
+                          className="px-2.5 py-1 rounded bg-[#00ff66] hover:bg-[#00ff66]/90 text-black text-[11px] font-bold font-mono flex items-center gap-1 cursor-pointer shadow-[0_0_8px_rgba(0,255,102,0.3)] transition-colors"
+                          title="Execute exploit in Cyber Terminal Simulator"
+                        >
+                          <TerminalIcon className="w-3 h-3" />
+                          <span>Run in Terminal ⚡</span>
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -1427,19 +2070,34 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Interactive Flag Submission Box */}
+              {/* Interactive Flag Submission & Direct Verification Box */}
               <div className="p-4 rounded-lg bg-[#090d16] border border-slate-800 space-y-3">
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between flex-wrap gap-2">
                   <div className="text-xs font-mono text-white font-bold flex items-center gap-1.5">
                     <Award className="w-4 h-4 text-[#00ff66]" />
                     Flag Submission Verification
                   </div>
-                  <button
-                    onClick={() => setFlagInput(activeLabModal.flag)}
-                    className="text-[11px] font-mono text-slate-500 hover:text-slate-300 underline"
-                  >
-                    Paste Sample Flag
-                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        soundEngine.playCopy();
+                        setFlagInput(activeLabModal.flag);
+                      }}
+                      className="text-[11px] font-mono text-slate-400 hover:text-white underline cursor-pointer"
+                    >
+                      Fill Flag
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleClaimFlagDirectly(activeLabModal.id, activeLabModal.flag, activeLabModal.title)}
+                      className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-[#00ff66]/40 text-[#00ff66] text-[11px] font-mono font-bold flex items-center gap-1 cursor-pointer transition-colors"
+                    >
+                      <CheckCircle2 className="w-3 h-3 text-[#00ff66]" />
+                      <span>{solvedLabs.includes(activeLabModal.id) ? 'Solved ✓' : 'Instant Solve ⚡'}</span>
+                    </button>
+                  </div>
                 </div>
 
                 <form onSubmit={handleFlagSubmit} className="flex flex-col sm:flex-row gap-2">
@@ -1487,14 +2145,28 @@ export default function App() {
                 )}
               </div>
               <button
-                onClick={() => setActiveLabModal(null)}
-                className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors"
+                onClick={closeLabModal}
+                className="px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 transition-colors cursor-pointer"
               >
                 Close Sandbox
               </button>
             </div>
 
           </div>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 p-4 rounded-lg bg-emerald-950/95 border border-[#00ff66] text-white font-mono text-xs shadow-[0_0_25px_rgba(0,255,102,0.4)] flex items-center gap-3 backdrop-blur-md transition-all animate-pulse">
+          <CheckCircle2 className="w-5 h-5 text-[#00ff66] shrink-0" />
+          <span className="font-semibold text-slate-100">{toastMessage}</span>
+          <button
+            onClick={() => setToastMessage(null)}
+            className="text-slate-400 hover:text-white ml-2 p-1 rounded hover:bg-slate-800 transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -1506,7 +2178,13 @@ export default function App() {
           </div>
           <div className="flex items-center gap-4">
             <span className="text-slate-600">Built for Red Teamers & Security Analysts</span>
-            <a href="#" className="hover:text-white transition-colors">Back to Top ↑</a>
+            <a
+              href="#"
+              onClick={() => soundEngine.playScrollTop()}
+              className="hover:text-white transition-colors cursor-pointer"
+            >
+              Back to Top ↑
+            </a>
           </div>
         </div>
       </footer>
