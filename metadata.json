@@ -1,0 +1,6 @@
+{
+  "name": "CTF / LABS",
+  "description": "Interactive cybersecurity CTF & hands-on practice platform curated by Abdurrahman, focused on enumeration, web exploitation, and Linux fundamentals.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
